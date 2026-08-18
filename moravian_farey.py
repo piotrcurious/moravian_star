@@ -39,12 +39,14 @@ from itertools import product
 
 try:
     import bpy
+    import bmesh
     import mathutils
     Vector = mathutils.Vector
     HAS_BLENDER = True
 except ImportError:
     HAS_BLENDER = False
     bpy = None
+    bmesh = None
 
     class Vector:
         """Fallback 3D Vector implementation when running outside Blender."""
@@ -639,20 +641,40 @@ def create_spike(
 # CREATE CENTRAL CORE
 # ============================================================
 
-def create_core(name, radius):
+def create_core(name, radius, ray_keys):
     if not HAS_BLENDER:
         return None
 
-    bpy.ops.mesh.primitive_ico_sphere_add(
-        subdivisions=2,
-        radius=radius,
-        location=(0, 0, 0)
-    )
+    mesh = bpy.data.meshes.new(name + "_Mesh")
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
 
-    obj = bpy.context.object
-    obj.name = name
+    bm = bmesh.new()
+
+    # Start with a large bounding cube
+    bmesh.ops.create_cube(bm, size=radius * 10.0)
+
+    # Slice the volume with planes perpendicular to each Farey ray.
+    # This generates the exact dual polyhedron / intersection of half-spaces.
+    for key in ray_keys:
+        d = vector_from_key(key).normalized()
+
+        bmesh.ops.bisect_plane(
+            bm,
+            geom=bm.verts[:] + bm.edges[:] + bm.faces[:],
+            plane_co=d * radius,
+            plane_no=d,
+            clear_outer=True
+        )
+
+    bm.to_mesh(mesh)
+    bm.free()
 
     obj.data.materials.append(MAT_CORE)
+
+    # Flat shading to emphasize the mathematical facets
+    for poly in mesh.polygons:
+        poly.use_smooth = False
 
     return obj
 
@@ -675,15 +697,16 @@ def create_star(
     root.location = Vector(origin)
     bpy.context.collection.objects.link(root)
 
-    if CREATE_CORE:
-        core = create_core(name + "_Core", INNER_RADIUS)
-        core.parent = root
-        core.location = (0, 0, 0)
-
     rays = list(ray_keys)
 
     if render_limit is not None:
         rays = rays[:render_limit]
+
+    if CREATE_CORE:
+        # Pass the Farey rays down to carve the core
+        core = create_core(name + "_Core", INNER_RADIUS, rays)
+        core.parent = root
+        core.location = (0, 0, 0)
 
     for index, key in enumerate(rays):
 
