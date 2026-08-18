@@ -493,12 +493,93 @@ def tangent_basis(direction):
 # CREATE SPIKE
 # ============================================================
 
+def create_spike_base_vertices(key, d, base_radius):
+    """
+    Construct base vertices for a spike according to canonical Moravian star geometry.
+
+    For the canonical 26-point star (rhombicuboctahedron faces):
+    - Support 1 (6 axial spikes): square base aligned with coordinate axes.
+    - Support 2 (12 edge spikes): square base with one edge aligned along the cube edge.
+    - Support 3 (8 triangular spikes): equilateral triangle base aligned with coordinate projections.
+    - Higher order Farey rays: square base constructed via tangent basis.
+    """
+    dx, dy, dz = d.x, d.y, d.z
+    center = d * base_radius
+
+    sx, sy, sz = float(key[0]), float(key[1]), float(key[2])
+    support = sum(1 for v in (sx, sy, sz) if v != 0)
+
+    if support == 1:
+        # Axial square spike: base edges parallel to coordinate axes
+        if sx != 0:
+            u, v = Vector((0, 1, 0)), Vector((0, 0, 1))
+        elif sy != 0:
+            u, v = Vector((1, 0, 0)), Vector((0, 0, 1))
+        else:
+            u, v = Vector((1, 0, 0)), Vector((0, 1, 0))
+
+        half = BASE_SIZE
+        verts = [
+            center + u * half + v * half,
+            center - u * half + v * half,
+            center - u * half - v * half,
+            center + u * half - v * half,
+        ]
+        return verts, 4
+
+    elif support == 2:
+        # Edge square spike: base aligned with the cube edge direction
+        if sx == 0:
+            v_edge = Vector((1, 0, 0))
+        elif sy == 0:
+            v_edge = Vector((0, 1, 0))
+        else:
+            v_edge = Vector((0, 0, 1))
+
+        u_edge = d.cross(v_edge).normalized()
+        half = BASE_SIZE
+
+        verts = [
+            center + u_edge * half + v_edge * half,
+            center - u_edge * half + v_edge * half,
+            center - u_edge * half - v_edge * half,
+            center + u_edge * half - v_edge * half,
+        ]
+        return verts, 4
+
+    elif support == 3:
+        # Triangular spike: 3 vertices directed along projections of standard basis vectors
+        # Projections of ex, ey, ez onto plane normal to d = (sx, sy, sz)/sqrt(3):
+        inv_sqrt3 = 1.0 / math.sqrt(3.0)
+        ex = Vector((1.0 - dx * dx, -dx * dy, -dx * dz)).normalized()
+        ey = Vector((-dy * dx, 1.0 - dy * dy, -dy * dz)).normalized()
+        ez = Vector((-dz * dx, -dz * dy, 1.0 - dz * dz)).normalized()
+
+        scale = BASE_SIZE * 1.3
+        verts = [
+            center + ex * scale,
+            center + ey * scale,
+            center + ez * scale,
+        ]
+        return verts, 3
+
+    else:
+        # General Farey ray: standard square base
+        u, v = tangent_basis(d)
+        verts = []
+        for i in range(4):
+            theta = 2.0 * math.pi * i / 4.0
+            p = center + (math.cos(theta) * BASE_SIZE * u) + (math.sin(theta) * BASE_SIZE * v)
+            verts.append(p)
+        return verts, 4
+
+
 def create_spike(
     name,
+    key,
     direction,
     base_radius,
     tip_distance,
-    sides=4,
     material=None
 ):
     """
@@ -509,29 +590,12 @@ def create_spike(
         return None
 
     d = Vector(direction).normalized()
-
-    u, v = tangent_basis(d)
-
-    center = d * base_radius
     tip = d * tip_distance
 
-    vertices = []
+    base_verts, sides = create_spike_base_vertices(key, d, base_radius)
 
-    # Base polygon
-    for i in range(sides):
-
-        theta = 2.0 * math.pi * i / sides
-
-        p = (
-            center
-            + math.cos(theta) * BASE_SIZE * u
-            + math.sin(theta) * BASE_SIZE * v
-        )
-
-        vertices.append(tuple(p))
-
+    vertices = [tuple(p) for p in base_verts]
     tip_index = len(vertices)
-
     vertices.append(tuple(tip))
 
     faces = []
@@ -541,12 +605,8 @@ def create_spike(
 
     # Side faces (pointing outward)
     for i in range(sides):
-
         j = (i + 1) % sides
-
-        faces.append(
-            (j, i, tip_index)
-        )
+        faces.append((j, i, tip_index))
 
     return create_mesh_object(
         name,
@@ -610,30 +670,12 @@ def create_star(
 
         d = vector_from_key(key)
 
-        support = sum(
-            1 for value in key
-            if value != 0
-        )
-
-        # Canonical Moravian star:
-        #
-        # 1 or 2 non-zero coordinates -> square face
-        #
-        # 3 non-zero coordinates -> triangular face
-        #
-        # This reproduces the 18 square + 8 triangular
-        # face classes of the canonical 26-point star.
-        if support == 3:
-            sides = 3
-        else:
-            sides = 4
-
         obj = create_spike(
             f"{name}_Spike_{index:04d}",
+            key,
             d,
             INNER_RADIUS,
             TIP_RADIUS,
-            sides=sides,
             material=material
         )
 
