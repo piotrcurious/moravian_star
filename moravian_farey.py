@@ -1,12 +1,9 @@
-import bpy
 import math
 from fractions import Fraction
 from itertools import product
-from mathutils import Vector
-
 
 # ============================================================
-# MORAVIAN / HERHUT STAR — FAREY HYPOTHESIS TEST
+# MORAVIAN / HERRNHUT STAR — FAREY HYPOTHESIS TEST
 #
 # Hypothesis:
 #
@@ -40,6 +37,84 @@ from mathutils import Vector
 # The script tests whether this relation continues for n>1.
 # ============================================================
 
+try:
+    import bpy
+    import mathutils
+    Vector = mathutils.Vector
+    HAS_BLENDER = True
+except ImportError:
+    HAS_BLENDER = False
+    bpy = None
+
+    class Vector:
+        """Fallback 3D Vector implementation when running outside Blender."""
+
+        def __init__(self, values):
+            if isinstance(values, Vector):
+                self.values = list(values.values)
+            else:
+                self.values = [float(x) for x in values]
+
+        @property
+        def x(self):
+            return self.values[0]
+
+        @property
+        def y(self):
+            return self.values[1]
+
+        @property
+        def z(self):
+            return self.values[2]
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, idx):
+            return self.values[idx]
+
+        def length(self):
+            return math.sqrt(sum(v ** 2 for v in self.values))
+
+        def normalized(self):
+            l = self.length()
+            if l == 0:
+                return Vector([0.0] * len(self.values))
+            return Vector([v / l for v in self.values])
+
+        def dot(self, other):
+            o = other.values if isinstance(other, Vector) else other
+            return sum(a * b for a, b in zip(self.values, o))
+
+        def cross(self, other):
+            a = self.values
+            b = other.values if isinstance(other, Vector) else other
+            return Vector([
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0]
+            ])
+
+        def __add__(self, other):
+            o = other.values if isinstance(other, Vector) else other
+            return Vector([a + b for a, b in zip(self.values, o)])
+
+        def __radd__(self, other):
+            return self.__add__(other)
+
+        def __sub__(self, other):
+            o = other.values if isinstance(other, Vector) else other
+            return Vector([a - b for a, b in zip(self.values, o)])
+
+        def __mul__(self, scalar):
+            return Vector([v * float(scalar) for v in self.values])
+
+        def __rmul__(self, scalar):
+            return self.__mul__(scalar)
+
+        def __repr__(self):
+            return f"Vector(({self.x}, {self.y}, {self.z}))"
+
 
 # ============================================================
 # USER PARAMETERS
@@ -66,11 +141,15 @@ CREATE_SPIKES = True
 # Show labels in Blender viewport
 CREATE_TEXT_LABELS = True
 
+
 # ============================================================
 # MATERIALS
 # ============================================================
 
 def make_material(name, color, metallic=0.0, roughness=0.45):
+    if not HAS_BLENDER:
+        return None
+
     mat = bpy.data.materials.get(name)
 
     if mat is None:
@@ -83,29 +162,13 @@ def make_material(name, color, metallic=0.0, roughness=0.45):
     return mat
 
 
-MAT_CORE = make_material(
-    "Star Core",
-    (0.12, 0.20, 0.35),
-    metallic=0.25
-)
-
-MAT_SPIKE = make_material(
-    "Star Spikes",
-    (0.75, 0.35, 0.08),
-    metallic=0.15
-)
-
-MAT_FAREY = make_material(
-    "Farey Construction",
-    (0.15, 0.60, 0.30),
-    metallic=0.10
-)
-
-MAT_TEXT = make_material(
-    "Text",
-    (1.0, 1.0, 1.0),
-    metallic=0.0
-)
+if HAS_BLENDER:
+    MAT_CORE = make_material("Star Core", (0.12, 0.20, 0.35), metallic=0.25)
+    MAT_SPIKE = make_material("Star Spikes", (0.75, 0.35, 0.08), metallic=0.15)
+    MAT_FAREY = make_material("Farey Construction", (0.15, 0.60, 0.30), metallic=0.10)
+    MAT_TEXT = make_material("Text", (1.0, 1.0, 1.0), metallic=0.0)
+else:
+    MAT_CORE = MAT_SPIKE = MAT_FAREY = MAT_TEXT = None
 
 
 # ============================================================
@@ -113,6 +176,9 @@ MAT_TEXT = make_material(
 # ============================================================
 
 def clear_scene():
+    if not HAS_BLENDER:
+        return
+
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
@@ -120,6 +186,14 @@ def clear_scene():
     for mesh in list(bpy.data.meshes):
         if mesh.users == 0:
             bpy.data.meshes.remove(mesh)
+
+
+def _to_fraction(val):
+    if isinstance(val, Fraction):
+        return val
+    if isinstance(val, float):
+        return Fraction(val).limit_denominator()
+    return Fraction(val)
 
 
 def canonical_key(v):
@@ -131,17 +205,17 @@ def canonical_key(v):
     as the same geometric direction.
     """
 
-    x, y, z = v
+    fx, fy, fz = (_to_fraction(val) for val in v)
 
-    m = max(abs(x), abs(y), abs(z))
+    m = max(abs(fx), abs(fy), abs(fz))
 
     if m == 0:
         raise ValueError("Zero vector")
 
     return (
-        Fraction(x, m),
-        Fraction(y, m),
-        Fraction(z, m),
+        fx / m,
+        fy / m,
+        fz / m,
     )
 
 
@@ -160,6 +234,12 @@ def angle_between(a, b):
     d = max(-1.0, min(1.0, a.dot(b)))
 
     return math.degrees(math.acos(d))
+
+
+def primitive_int_vector(key):
+    """Convert rational canonical key to primitive integer vector tuple."""
+    lcm = math.lcm(key[0].denominator, key[1].denominator, key[2].denominator)
+    return (int(key[0] * lcm), int(key[1] * lcm), int(key[2] * lcm))
 
 
 # ============================================================
@@ -182,13 +262,13 @@ def farey_sequence(order):
     if order < 1:
         raise ValueError("Farey order must be >= 1")
 
-    seq = [Fraction(0, 1)]
+    a, b, c, d = 0, 1, 1, order
+    seq = [Fraction(a, b)]
 
-    for denominator in range(1, order + 1):
-        for numerator in range(0, denominator + 1):
-            seq.append(Fraction(numerator, denominator))
-
-    seq = sorted(set(seq))
+    while c <= order:
+        k = (order + b) // d
+        a, b, c, d = c, d, k * c - a, k * d - b
+        seq.append(Fraction(a, b))
 
     return seq
 
@@ -273,6 +353,39 @@ def farey_rays(order):
 
 
 # ============================================================
+# FAREY MEDIANT SUBDIVISION RAYS
+# ============================================================
+
+def farey_mediant_rays(depth=1, max_neighbor_angle=55.0):
+    """
+    Construct 3D directions using vector mediants on adjacent rays.
+
+    At depth 0, returns canonical rays.
+    For depth > 0, computes vector mediant u + v for adjacent pairs (u, v)
+    with angular separation <= max_neighbor_angle degrees.
+    """
+    current_rays = canonical_rays()
+
+    for _ in range(depth):
+        p_vecs = [primitive_int_vector(k) for k in current_rays]
+        next_rays = set(current_rays)
+
+        num_vecs = len(p_vecs)
+        for i in range(num_vecs):
+            v1 = p_vecs[i]
+            for j in range(i + 1, num_vecs):
+                v2 = p_vecs[j]
+                if angle_between(v1, v2) <= max_neighbor_angle:
+                    mediant = (v1[0] + v2[0], v1[1] + v2[1], v1[2] + v2[2])
+                    if any(c != 0 for c in mediant):
+                        next_rays.add(canonical_key(mediant))
+
+        current_rays = sorted(next_rays)
+
+    return current_rays
+
+
+# ============================================================
 # RAY COMPARISON
 # ============================================================
 
@@ -334,6 +447,8 @@ def nearest_canonical_angles(test_rays, canonical_rays):
 # ============================================================
 
 def create_mesh_object(name, vertices, faces, material=None):
+    if not HAS_BLENDER:
+        return None
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
 
@@ -390,6 +505,8 @@ def create_spike(
     Create a pyramid whose base is tangent to the spherical
     core and whose tip lies further along the radial direction.
     """
+    if not HAS_BLENDER:
+        return None
 
     d = Vector(direction).normalized()
 
@@ -407,7 +524,6 @@ def create_spike(
 
         p = (
             center
-            + base_radius * 0.0 * d
             + math.cos(theta) * BASE_SIZE * u
             + math.sin(theta) * BASE_SIZE * v
         )
@@ -445,6 +561,8 @@ def create_spike(
 # ============================================================
 
 def create_core(name, radius):
+    if not HAS_BLENDER:
+        return None
 
     bpy.ops.mesh.primitive_ico_sphere_add(
         subdivisions=2,
@@ -470,6 +588,8 @@ def create_star(
     material,
     render_limit=None
 ):
+    if not HAS_BLENDER:
+        return None
 
     origin = Vector(origin)
 
@@ -540,6 +660,8 @@ def add_text(
     location,
     size=0.55
 ):
+    if not HAS_BLENDER:
+        return None
 
     bpy.ops.object.text_add(
         location=location,
@@ -585,7 +707,7 @@ def print_report():
     print("  total:            26")
 
     print("")
-    print("Farey sequences:")
+    print("Farey sequences (Coordinate lifting):")
     print("")
 
     for order in FAREY_ORDERS:
@@ -654,6 +776,20 @@ def print_report():
 
         print("")
 
+    print("Farey Mediant Subdivision (Geometric recursion):")
+    print("")
+
+    for depth in [0, 1]:
+        m_rays = farey_mediant_rays(depth)
+        m_comparison = compare_ray_sets(canonical, m_rays)
+
+        print(f"Mediant Subdivision Depth {depth}:")
+        print(f"    3D rays         : {len(m_rays)}")
+        print(f"    exact overlap   : {len(m_comparison['intersection'])}")
+        print(f"    extra rays      : {len(m_comparison['only_test'])}")
+        print(f"    exact match     : {m_comparison['exact_match']}")
+        print("")
+
     print("=" * 72)
 
     print(
@@ -678,11 +814,15 @@ def print_report():
 
 def build_scene():
 
-    clear_scene()
-
     canonical = canonical_rays()
 
     print_report()
+
+    if not HAS_BLENDER:
+        print("[Notice] Blender environment not detected. Visual scene creation skipped, report complete.")
+        return
+
+    clear_scene()
 
     # --------------------------------------------------------
     # Canonical star
