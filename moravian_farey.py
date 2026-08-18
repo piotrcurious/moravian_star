@@ -536,16 +536,16 @@ def create_spike(
 
     faces = []
 
-    # Base face
-    faces.append(tuple(range(sides)))
+    # Base face (pointing inward towards origin)
+    faces.append(tuple(reversed(range(sides))))
 
-    # Side faces
+    # Side faces (pointing outward)
     for i in range(sides):
 
         j = (i + 1) % sides
 
         faces.append(
-            (i, j, tip_index)
+            (j, i, tip_index)
         )
 
     return create_mesh_object(
@@ -566,7 +566,8 @@ def create_core(name, radius):
 
     bpy.ops.mesh.primitive_ico_sphere_add(
         subdivisions=2,
-        radius=radius
+        radius=radius,
+        location=(0, 0, 0)
     )
 
     obj = bpy.context.object
@@ -591,24 +592,14 @@ def create_star(
     if not HAS_BLENDER:
         return None
 
-    origin = Vector(origin)
-
     root = bpy.data.objects.new(name, None)
+    root.location = Vector(origin)
     bpy.context.collection.objects.link(root)
 
     if CREATE_CORE:
-
-        bpy.ops.mesh.primitive_ico_sphere_add(
-            subdivisions=2,
-            radius=INNER_RADIUS,
-            location=origin
-        )
-
-        core = bpy.context.object
-        core.name = name + "_Core"
-        core.data.materials.append(MAT_CORE)
-
+        core = create_core(name + "_Core", INNER_RADIUS)
         core.parent = root
+        core.location = (0, 0, 0)
 
     rays = list(ray_keys)
 
@@ -639,7 +630,7 @@ def create_star(
 
         obj = create_spike(
             f"{name}_Spike_{index:04d}",
-            d + origin,
+            d,
             INNER_RADIUS,
             TIP_RADIUS,
             sides=sides,
@@ -647,6 +638,7 @@ def create_star(
         )
 
         obj.parent = root
+        obj.location = (0, 0, 0)
 
     return root
 
@@ -665,7 +657,7 @@ def add_text(
 
     bpy.ops.object.text_add(
         location=location,
-        rotation=(0, 0, 0)
+        rotation=(math.radians(90), 0, 0)
     )
 
     obj = bpy.context.object
@@ -842,7 +834,7 @@ def build_scene():
 
         add_text(
             "Canonical\n26-point star",
-            (x, 0, -4.0)
+            (x, -4.5, 0)
         )
 
     # --------------------------------------------------------
@@ -867,7 +859,7 @@ def build_scene():
 
             add_text(
                 f"Farey F_{order}\n{len(rays)} rays",
-                (x, 0, -4.0)
+                (x, -4.5, 0)
             )
 
     # --------------------------------------------------------
@@ -880,26 +872,22 @@ def build_scene():
         0.015
     )
 
-    # Camera
+    center_x = STAR_SPACING * (len(FAREY_ORDERS) / 2)
+
+    # Camera looking at all stars from front-above
     bpy.ops.object.camera_add(
         location=(
-            STAR_SPACING * 2.5,
-            -STAR_SPACING * 5.0,
-            STAR_SPACING * 2.5
+            center_x,
+            -32.0,
+            12.0
         )
     )
 
     camera = bpy.context.object
-
     bpy.context.scene.camera = camera
 
-    # Point camera toward central region
-    target = Vector((
-        STAR_SPACING * (len(FAREY_ORDERS) / 2),
-        0,
-        0
-    ))
-
+    # Point camera toward center of row
+    target = Vector((center_x, 0, 0))
     direction = target - camera.location
 
     camera.rotation_euler = direction.to_track_quat(
@@ -907,25 +895,28 @@ def build_scene():
         'Y'
     ).to_euler()
 
-    # Light
+    # Sun Light for even illumination across all stars
     bpy.ops.object.light_add(
-        type='AREA',
-        location=(
-            STAR_SPACING * 2,
-            -4,
-            7
-        )
+        type='SUN',
+        location=(center_x, -10, 20)
     )
+    sun = bpy.context.object
+    sun.data.energy = 3.0
+    sun.rotation_euler = (math.radians(45), math.radians(15), math.radians(10))
 
-    light = bpy.context.object
-    light.data.energy = 1400
-    light.data.shape = 'DISK'
-    light.data.size = 8
+    # Fill Light from side
+    bpy.ops.object.light_add(
+        type='SUN',
+        location=(0, -10, 10)
+    )
+    fill = bpy.context.object
+    fill.data.energy = 1.0
+    fill.rotation_euler = (math.radians(30), math.radians(-30), math.radians(0))
 
-    # Ground
+    # Ground Plane
     bpy.ops.mesh.primitive_plane_add(
-        size=100,
-        location=(0, 0, -3.2)
+        size=200,
+        location=(center_x, 0, -3.2)
     )
 
     ground = bpy.context.object
