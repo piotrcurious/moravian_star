@@ -129,7 +129,7 @@ FAREY_ORDERS = [1, 2, 3, 4]
 INNER_RADIUS = 1.0
 TIP_RADIUS = 2.7
 
-# Width of pyramid bases
+# Width of pyramid bases (used for standalone/fallback rendering)
 BASE_SIZE = 0.42
 
 # Separate stars spatially along X for visual comparison
@@ -500,15 +500,9 @@ def tangent_basis(direction):
 # CREATE SPIKE
 # ============================================================
 
-def create_spike_base_vertices(key, d, base_radius, poly_sides=None):
+def create_spike_base_vertices(key, d, base_radius):
     """
-    Construct base vertices for a spike according to canonical Moravian star geometry.
-
-    For the canonical 26-point star (rhombicuboctahedron faces):
-    - Support 1 (6 axial spikes): square base aligned with coordinate axes.
-    - Support 2 (12 edge spikes): square base aligned with coordinate axes/edges.
-    - Support 3 (8 triangular spikes): equilateral triangle base aligned with coordinate projections.
-    - Higher order Farey rays / dual polyhedra: polygon base matched to poly_sides.
+    Fallback base vertex construction for non-Blender or standalone runtimes.
     """
     x, y, z = float(key[0]), float(key[1]), float(key[2])
     abs_coords = (abs(x), abs(y), abs(z))
@@ -516,14 +510,7 @@ def create_spike_base_vertices(key, d, base_radius, poly_sides=None):
 
     nz = [i for i, val in enumerate(abs_coords) if val != 0]
 
-    if poly_sides is not None:
-        sides = poly_sides
-    elif len(nz) == 3 and abs_coords[0] == abs_coords[1] == abs_coords[2]:
-        sides = 3
-    else:
-        sides = 4
-
-    if len(nz) == 1 and sides == 4:
+    if len(nz) == 1:
         # Axial square spike
         idx = nz[0]
         if idx == 0:
@@ -545,7 +532,7 @@ def create_spike_base_vertices(key, d, base_radius, poly_sides=None):
         ]
         return verts, 4
 
-    elif len(nz) == 2 and sides == 4:
+    elif len(nz) == 2:
         # Edge square spike
         zero_idx = (set([0, 1, 2]) - set(nz)).pop()
         if zero_idx == 0:
@@ -568,7 +555,7 @@ def create_spike_base_vertices(key, d, base_radius, poly_sides=None):
         ]
         return verts, 4
 
-    elif len(nz) == 3 and abs_coords[0] == abs_coords[1] == abs_coords[2] and sides == 3:
+    elif len(nz) == 3 and abs_coords[0] == abs_coords[1] == abs_coords[2]:
         # Canonical body diagonal triangular spike
         ex = Vector((1.0 if x > 0 else -1.0, 0, 0))
         ey = Vector((0, 1.0 if y > 0 else -1.0, 0))
@@ -590,14 +577,16 @@ def create_spike_base_vertices(key, d, base_radius, poly_sides=None):
         return verts, 3
 
     else:
-        # General Farey ray polygon base
+        # General Farey ray
         u, v = tangent_basis(d)
-        verts = []
-        for i in range(sides):
-            theta = 2.0 * math.pi * i / sides
-            p = center + u * (math.cos(theta) * BASE_SIZE) + v * (math.sin(theta) * BASE_SIZE)
-            verts.append(p)
-        return verts, sides
+        half = BASE_SIZE
+        verts = [
+            center + u * half + v * half,
+            center - u * half + v * half,
+            center - u * half - v * half,
+            center + u * half - v * half,
+        ]
+        return verts, 4
 
 
 def create_spike(
@@ -606,12 +595,12 @@ def create_spike(
     direction,
     base_radius,
     tip_distance,
-    poly_sides=None,
+    exact_base_verts=None,
     material=None
 ):
     """
-    Create a pyramid whose base is tangent to the spherical
-    core and whose tip lies further along the radial direction.
+    Create a pyramid whose base matches the exact geometric dual face on the core
+    and whose tip lies further along the radial direction.
     """
     if not HAS_BLENDER:
         return None
@@ -619,7 +608,11 @@ def create_spike(
     d = Vector(direction).normalized()
     tip = d * tip_distance
 
-    base_verts, sides = create_spike_base_vertices(key, d, base_radius, poly_sides=poly_sides)
+    if exact_base_verts is not None and len(exact_base_verts) >= 3:
+        base_verts = exact_base_verts
+        sides = len(base_verts)
+    else:
+        base_verts, sides = create_spike_base_vertices(key, d, base_radius)
 
     vertices = [tuple(p) for p in base_verts]
     tip_index = len(vertices)
@@ -649,7 +642,7 @@ def create_spike(
 
 def create_core(name, radius, ray_keys):
     if not HAS_BLENDER:
-        return None
+        return None, {}
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
     obj = bpy.data.objects.new(name, mesh)
@@ -677,6 +670,22 @@ def create_core(name, radius, ray_keys):
         if edges_cut:
             bmesh.ops.edgenet_fill(bm, edges=edges_cut)
 
+    bm.normal_update()
+
+    # Extract exact dual base polygon vertices for each ray
+    ray_polygons = {}
+    for key in ray_keys:
+        d = vector_from_key(key).normalized()
+        best_face = max(bm.faces, key=lambda f: (f.normal.x * d.x + f.normal.y * d.y + f.normal.z * d.z))
+
+        v_coords = [Vector((v.co.x, v.co.y, v.co.z)) for v in best_face.verts]
+        if len(v_coords) >= 3:
+            v0, v1, v2 = v_coords[0], v_coords[1], v_coords[2]
+            if (v1 - v0).cross(v2 - v0).dot(d) < 0:
+                v_coords.reverse()
+
+        ray_polygons[key] = v_coords
+
     bm.to_mesh(mesh)
     bm.free()
 
@@ -686,7 +695,7 @@ def create_core(name, radius, ray_keys):
     for poly in mesh.polygons:
         poly.use_smooth = False
 
-    return obj
+    return obj, ray_polygons
 
 
 # ============================================================
@@ -712,29 +721,19 @@ def create_star(
     if render_limit is not None:
         rays = rays[:render_limit]
 
-    core_obj = None
-    ray_face_sides = {}
+    ray_polygons = {}
 
     if CREATE_CORE:
         # Pass the Farey rays down to carve the core
-        core_obj = create_core(name + "_Core", INNER_RADIUS, rays)
-        core_obj.parent = root
-        core_obj.location = (0, 0, 0)
-
-        # Inspect dual polyhedral faces on core to match polygon sides for each spike
-        if core_obj and core_obj.data and len(core_obj.data.polygons) > 0:
-            bm_core = bmesh.new()
-            bm_core.from_mesh(core_obj.data)
-            for key in rays:
-                d = vector_from_key(key).normalized()
-                best_face = max(bm_core.faces, key=lambda f: (f.normal.x * d.x + f.normal.y * d.y + f.normal.z * d.z))
-                ray_face_sides[key] = len(best_face.verts)
-            bm_core.free()
+        core_obj, ray_polygons = create_core(name + "_Core", INNER_RADIUS, rays)
+        if core_obj:
+            core_obj.parent = root
+            core_obj.location = (0, 0, 0)
 
     for index, key in enumerate(rays):
 
         d = vector_from_key(key)
-        poly_sides = ray_face_sides.get(key, None)
+        exact_base_verts = ray_polygons.get(key, None)
 
         obj = create_spike(
             f"{name}_Spike_{index:04d}",
@@ -742,12 +741,13 @@ def create_star(
             d,
             INNER_RADIUS,
             TIP_RADIUS,
-            poly_sides=poly_sides,
+            exact_base_verts=exact_base_verts,
             material=material
         )
 
-        obj.parent = root
-        obj.location = (0, 0, 0)
+        if obj:
+            obj.parent = root
+            obj.location = (0, 0, 0)
 
     return root
 
