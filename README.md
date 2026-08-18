@@ -1,2 +1,925 @@
 # moravian_star
 farey sequence Moravian star generator 
+Worked for 10s
+
+Yes. There is a clean way to test the idea computationally.
+
+The key observation is that the canonical 26-point Moravian star has direction vectors
+
+\[
+(x,y,z),\qquad x,y,z\in\{-1,0,1\},\quad (x,y,z)\ne(0,0,0),
+\]
+
+giving
+
+\[
+3^3-1=26
+\]
+
+directions.
+
+That is already suggestive of a Farey-like construction, because for Farey order \(1\),
+
+\[
+F_1=\left\{0,1\right\},
+\]
+
+and allowing signs gives exactly the coordinate ratios \(0:1\) and \(1:1\). The important question is whether higher-order Farey fractions produce a meaningful generalization or whether the coincidence stops at \(n=1\).
+
+The Blender script below tests precisely that. It:
+
+generates the canonical 26-ray star;
+
+constructs Farey sequences \(F_n\);
+
+lifts their fractions into 3-D direction vectors;
+
+generates Farey stars for \(n=1,2,3,4\);
+
+compares their ray sets against the canonical 26 rays;
+
+reports exact overlap, extra rays, and angular deviation;
+
+builds the corresponding stars in Blender so you can visually inspect the construction.
+
+
+import bpy
+import math
+from fractions import Fraction
+from itertools import product
+from mathutils import Vector
+
+
+# ============================================================
+# MORAVIAN / HERHUT STAR — FAREY HYPOTHESIS TEST
+#
+# Hypothesis:
+#
+#   The 26 directions of the canonical Moravian star may be
+#   interpreted as a low-order Farey-type rational-direction
+#   construction.
+#
+# This script tests that idea by constructing 3D rays from
+# Farey fractions and comparing them exactly against the
+# canonical 26 directions.
+#
+# Canonical directions:
+#
+#       x,y,z in {-1,0,+1}, excluding (0,0,0)
+#
+#       => 3^3 - 1 = 26 rays
+#
+# Farey construction:
+#
+#       take Farey fractions F_n
+#       use their absolute values as normalized coordinates
+#       and allow independent signs.
+#
+#       At n=1:
+#           F_1 = {0,1}
+#
+#       therefore coordinates are {-1,0,+1}
+#
+#       => exactly the canonical 26 directions.
+#
+# The script tests whether this relation continues for n>1.
+# ============================================================
+
+
+# ============================================================
+# USER PARAMETERS
+# ============================================================
+
+FAREY_ORDERS = [1, 2, 3, 4]
+
+INNER_RADIUS = 1.0
+TIP_RADIUS = 2.7
+
+# Width of pyramid bases
+BASE_SIZE = 0.42
+
+# Separate stars spatially along X for visual comparison
+STAR_SPACING = 7.0
+
+# Maximum number of rays to render per star.
+# None = render everything.
+MAX_RENDER_RAYS = None
+
+CREATE_CORE = True
+CREATE_SPIKES = True
+
+# Show labels in Blender viewport
+CREATE_TEXT_LABELS = True
+
+# ============================================================
+# MATERIALS
+# ============================================================
+
+def make_material(name, color, metallic=0.0, roughness=0.45):
+    mat = bpy.data.materials.get(name)
+
+    if mat is None:
+        mat = bpy.data.materials.new(name)
+
+    mat.diffuse_color = (*color, 1.0)
+    mat.metallic = metallic
+    mat.roughness = roughness
+
+    return mat
+
+
+MAT_CORE = make_material(
+    "Star Core",
+    (0.12, 0.20, 0.35),
+    metallic=0.25
+)
+
+MAT_SPIKE = make_material(
+    "Star Spikes",
+    (0.75, 0.35, 0.08),
+    metallic=0.15
+)
+
+MAT_FAREY = make_material(
+    "Farey Construction",
+    (0.15, 0.60, 0.30),
+    metallic=0.10
+)
+
+MAT_TEXT = make_material(
+    "Text",
+    (1.0, 1.0, 1.0),
+    metallic=0.0
+)
+
+
+# ============================================================
+# GENERAL UTILITIES
+# ============================================================
+
+def clear_scene():
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete(use_global=False)
+
+    # Remove orphan meshes
+    for mesh in list(bpy.data.meshes):
+        if mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+
+
+def canonical_key(v):
+    """
+    Exact rational/integer normalized representation.
+
+    Scale vector so maximum absolute coordinate = 1.
+    This treats vectors differing only by positive scale
+    as the same geometric direction.
+    """
+
+    x, y, z = v
+
+    m = max(abs(x), abs(y), abs(z))
+
+    if m == 0:
+        raise ValueError("Zero vector")
+
+    return (
+        Fraction(x, m),
+        Fraction(y, m),
+        Fraction(z, m),
+    )
+
+
+def vector_from_key(k):
+    return Vector((
+        float(k[0]),
+        float(k[1]),
+        float(k[2]),
+    )).normalized()
+
+
+def angle_between(a, b):
+    a = Vector(a).normalized()
+    b = Vector(b).normalized()
+
+    d = max(-1.0, min(1.0, a.dot(b)))
+
+    return math.degrees(math.acos(d))
+
+
+# ============================================================
+# FAREY SEQUENCE
+# ============================================================
+
+def farey_sequence(order):
+    """
+    Return Farey sequence F_n.
+
+    Example:
+
+        F_1 = [0, 1]
+
+        F_2 = [0, 1/2, 1]
+
+        F_3 = [0, 1/3, 1/2, 2/3, 1]
+    """
+
+    if order < 1:
+        raise ValueError("Farey order must be >= 1")
+
+    seq = [Fraction(0, 1)]
+
+    for denominator in range(1, order + 1):
+        for numerator in range(0, denominator + 1):
+            seq.append(Fraction(numerator, denominator))
+
+    seq = sorted(set(seq))
+
+    return seq
+
+
+# ============================================================
+# CANONICAL MORAVIAN STAR RAYS
+# ============================================================
+
+def canonical_rays():
+    rays = set()
+
+    for x in (-1, 0, 1):
+        for y in (-1, 0, 1):
+            for z in (-1, 0, 1):
+
+                if x == 0 and y == 0 and z == 0:
+                    continue
+
+                k = canonical_key((x, y, z))
+
+                rays.add(k)
+
+    return sorted(rays)
+
+
+# ============================================================
+# FAREY -> 3D RAYS
+# ============================================================
+
+def farey_rays(order):
+    """
+    Construct 3D rational directions from Farey fractions.
+
+    Every coordinate belongs to F_n.
+
+    At least one coordinate is exactly 1 after normalization.
+
+    Independent signs are applied.
+
+    This is intentionally a simple/natural lift of Farey
+    fractions into projective 3D directions.
+
+    For n=1:
+
+        F_1 = {0,1}
+
+    therefore:
+
+        coordinates ∈ {-1,0,+1}
+
+    yielding exactly the 26 canonical rays.
+    """
+
+    F = farey_sequence(order)
+
+    rays = set()
+
+    for a, b, c in product(F, repeat=3):
+
+        if a == 0 and b == 0 and c == 0:
+            continue
+
+        # Require at least one coordinate to be exactly 1.
+        #
+        # This fixes projective scale.
+        if not (a == 1 or b == 1 or c == 1):
+            continue
+
+        for sx, sy, sz in product((-1, 1), repeat=3):
+
+            # Don't create signed zeros as conceptually
+            # different vectors.
+            x = a * sx
+            y = b * sy
+            z = c * sz
+
+            k = canonical_key((x, y, z))
+
+            rays.add(k)
+
+    return sorted(rays)
+
+
+# ============================================================
+# RAY COMPARISON
+# ============================================================
+
+def compare_ray_sets(canonical, test):
+    canonical = set(canonical)
+    test = set(test)
+
+    intersection = canonical & test
+    only_canonical = canonical - test
+    only_test = test - canonical
+
+    return {
+        "canonical_count": len(canonical),
+        "test_count": len(test),
+        "intersection": intersection,
+        "only_canonical": only_canonical,
+        "only_test": only_test,
+        "exact_match": canonical == test,
+    }
+
+
+def nearest_canonical_angles(test_rays, canonical_rays):
+    """
+    For every Farey ray find the angular distance to the nearest
+    canonical ray.
+
+    Because these are radial directions, this provides a useful
+    geometric measure of how much the Farey construction diverges
+    from the real 26-point star.
+    """
+
+    canonical_vectors = [
+        vector_from_key(k)
+        for k in canonical_rays
+    ]
+
+    results = []
+
+    for k in test_rays:
+
+        v = vector_from_key(k)
+
+        best = 180.0
+
+        for c in canonical_vectors:
+
+            a = angle_between(v, c)
+
+            if a < best:
+                best = a
+
+        results.append(best)
+
+    return results
+
+
+# ============================================================
+# CREATE MESH
+# ============================================================
+
+def create_mesh_object(name, vertices, faces, material=None):
+
+    mesh = bpy.data.meshes.new(name + "_Mesh")
+
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+
+    obj = bpy.data.objects.new(name, mesh)
+
+    bpy.context.collection.objects.link(obj)
+
+    if material:
+        obj.data.materials.append(material)
+
+    return obj
+
+
+# ============================================================
+# LOCAL BASIS
+# ============================================================
+
+def tangent_basis(direction):
+    """
+    Generate two orthogonal tangent vectors perpendicular
+    to direction.
+    """
+
+    d = Vector(direction).normalized()
+
+    # Choose a vector not parallel to d.
+    if abs(d.z) < 0.8:
+        ref = Vector((0, 0, 1))
+    else:
+        ref = Vector((0, 1, 0))
+
+    u = d.cross(ref).normalized()
+    v = d.cross(u).normalized()
+
+    return u, v
+
+
+# ============================================================
+# CREATE SPIKE
+# ============================================================
+
+def create_spike(
+    name,
+    direction,
+    base_radius,
+    tip_distance,
+    sides=4,
+    material=None
+):
+    """
+    Create a pyramid whose base is tangent to the spherical
+    core and whose tip lies further along the radial direction.
+    """
+
+    d = Vector(direction).normalized()
+
+    u, v = tangent_basis(d)
+
+    center = d * base_radius
+    tip = d * tip_distance
+
+    vertices = []
+
+    # Base polygon
+    for i in range(sides):
+
+        theta = 2.0 * math.pi * i / sides
+
+        p = (
+            center
+            + base_radius * 0.0 * d
+            + math.cos(theta) * BASE_SIZE * u
+            + math.sin(theta) * BASE_SIZE * v
+        )
+
+        vertices.append(tuple(p))
+
+    tip_index = len(vertices)
+
+    vertices.append(tuple(tip))
+
+    faces = []
+
+    # Base face
+    faces.append(tuple(range(sides)))
+
+    # Side faces
+    for i in range(sides):
+
+        j = (i + 1) % sides
+
+        faces.append(
+            (i, j, tip_index)
+        )
+
+    return create_mesh_object(
+        name,
+        vertices,
+        faces,
+        material
+    )
+
+
+# ============================================================
+# CREATE CENTRAL CORE
+# ============================================================
+
+def create_core(name, radius):
+
+    bpy.ops.mesh.primitive_ico_sphere_add(
+        subdivisions=2,
+        radius=radius
+    )
+
+    obj = bpy.context.object
+    obj.name = name
+
+    obj.data.materials.append(MAT_CORE)
+
+    return obj
+
+
+# ============================================================
+# CREATE STAR
+# ============================================================
+
+def create_star(
+    name,
+    ray_keys,
+    origin,
+    material,
+    render_limit=None
+):
+
+    origin = Vector(origin)
+
+    root = bpy.data.objects.new(name, None)
+    bpy.context.collection.objects.link(root)
+
+    if CREATE_CORE:
+
+        bpy.ops.mesh.primitive_ico_sphere_add(
+            subdivisions=2,
+            radius=INNER_RADIUS,
+            location=origin
+        )
+
+        core = bpy.context.object
+        core.name = name + "_Core"
+        core.data.materials.append(MAT_CORE)
+
+        core.parent = root
+
+    rays = list(ray_keys)
+
+    if render_limit is not None:
+        rays = rays[:render_limit]
+
+    for index, key in enumerate(rays):
+
+        d = vector_from_key(key)
+
+        support = sum(
+            1 for value in key
+            if value != 0
+        )
+
+        # Canonical Moravian star:
+        #
+        # 1 or 2 non-zero coordinates -> square face
+        #
+        # 3 non-zero coordinates -> triangular face
+        #
+        # This reproduces the 18 square + 8 triangular
+        # face classes of the canonical 26-point star.
+        if support == 3:
+            sides = 3
+        else:
+            sides = 4
+
+        obj = create_spike(
+            f"{name}_Spike_{index:04d}",
+            d + origin,
+            INNER_RADIUS,
+            TIP_RADIUS,
+            sides=sides,
+            material=material
+        )
+
+        obj.parent = root
+
+    return root
+
+
+# ============================================================
+# LABELS
+# ============================================================
+
+def add_text(
+    text,
+    location,
+    size=0.55
+):
+
+    bpy.ops.object.text_add(
+        location=location,
+        rotation=(0, 0, 0)
+    )
+
+    obj = bpy.context.object
+
+    obj.data.body = text
+    obj.data.align_x = 'CENTER'
+    obj.data.align_y = 'CENTER'
+
+    obj.data.size = size
+
+    obj.data.materials.append(MAT_TEXT)
+
+    return obj
+
+
+# ============================================================
+# REPORT
+# ============================================================
+
+def print_report():
+
+    canonical = canonical_rays()
+
+    print("")
+    print("=" * 72)
+    print("MORAVIAN STAR / FAREY HYPOTHESIS TEST")
+    print("=" * 72)
+
+    print("")
+    print("Canonical Moravian ray count:")
+    print(len(canonical))
+
+    print("")
+    print("Canonical rays consist of:")
+    print("  axes:              6")
+    print("  edge directions:  12")
+    print("  body diagonals:    8")
+    print("  --------------------")
+    print("  total:            26")
+
+    print("")
+    print("Farey sequences:")
+    print("")
+
+    for order in FAREY_ORDERS:
+
+        F = farey_sequence(order)
+        rays = farey_rays(order)
+
+        comparison = compare_ray_sets(
+            canonical,
+            rays
+        )
+
+        angles = nearest_canonical_angles(
+            rays,
+            canonical
+        )
+
+        avg_angle = (
+            sum(angles) / len(angles)
+            if angles else 0
+        )
+
+        max_angle = max(angles) if angles else 0
+
+        print(
+            f"F_{order}:"
+        )
+
+        print(
+            f"    Farey fractions : {len(F)}"
+        )
+
+        print(
+            f"    3D rays         : {len(rays)}"
+        )
+
+        print(
+            f"    exact overlap   : "
+            f"{len(comparison['intersection'])}"
+        )
+
+        print(
+            f"    extra rays      : "
+            f"{len(comparison['only_test'])}"
+        )
+
+        print(
+            f"    missing rays    : "
+            f"{len(comparison['only_canonical'])}"
+        )
+
+        print(
+            f"    exact match     : "
+            f"{comparison['exact_match']}"
+        )
+
+        print(
+            f"    mean angle      : "
+            f"{avg_angle:.6f} degrees"
+        )
+
+        print(
+            f"    maximum angle   : "
+            f"{max_angle:.6f} degrees"
+        )
+
+        print("")
+
+    print("=" * 72)
+
+    print(
+        "INTERPRETATION:"
+    )
+
+    print(
+        "If F_1 produces exactly 26 rays, while F_n for n>1 "
+        "produces additional rational directions, the result "
+        "supports a Farey-like interpretation of the 26-ray "
+        "configuration, but not the claim that the Moravian "
+        "star itself is literally a Farey sequence."
+    )
+
+    print("=" * 72)
+    print("")
+
+
+# ============================================================
+# BUILD SCENE
+# ============================================================
+
+def build_scene():
+
+    clear_scene()
+
+    canonical = canonical_rays()
+
+    print_report()
+
+    # --------------------------------------------------------
+    # Canonical star
+    # --------------------------------------------------------
+
+    x = 0
+
+    create_star(
+        "CANONICAL_26_POINT",
+        canonical,
+        origin=(x, 0, 0),
+        material=MAT_SPIKE,
+        render_limit=MAX_RENDER_RAYS
+    )
+
+    if CREATE_TEXT_LABELS:
+
+        add_text(
+            "Canonical\n26-point star",
+            (x, 0, -4.0)
+        )
+
+    # --------------------------------------------------------
+    # Farey stars
+    # --------------------------------------------------------
+
+    for i, order in enumerate(FAREY_ORDERS):
+
+        rays = farey_rays(order)
+
+        x = (i + 1) * STAR_SPACING
+
+        create_star(
+            f"FAREY_ORDER_{order}",
+            rays,
+            origin=(x, 0, 0),
+            material=MAT_FAREY,
+            render_limit=MAX_RENDER_RAYS
+        )
+
+        if CREATE_TEXT_LABELS:
+
+            add_text(
+                f"Farey F_{order}\n{len(rays)} rays",
+                (x, 0, -4.0)
+            )
+
+    # --------------------------------------------------------
+    # World setup
+    # --------------------------------------------------------
+
+    bpy.context.scene.world.color = (
+        0.015,
+        0.015,
+        0.015
+    )
+
+    # Camera
+    bpy.ops.object.camera_add(
+        location=(
+            STAR_SPACING * 2.5,
+            -STAR_SPACING * 5.0,
+            STAR_SPACING * 2.5
+        )
+    )
+
+    camera = bpy.context.object
+
+    bpy.context.scene.camera = camera
+
+    # Point camera toward central region
+    target = Vector((
+        STAR_SPACING * (len(FAREY_ORDERS) / 2),
+        0,
+        0
+    ))
+
+    direction = target - camera.location
+
+    camera.rotation_euler = direction.to_track_quat(
+        '-Z',
+        'Y'
+    ).to_euler()
+
+    # Light
+    bpy.ops.object.light_add(
+        type='AREA',
+        location=(
+            STAR_SPACING * 2,
+            -4,
+            7
+        )
+    )
+
+    light = bpy.context.object
+    light.data.energy = 1400
+    light.data.shape = 'DISK'
+    light.data.size = 8
+
+    # Ground
+    bpy.ops.mesh.primitive_plane_add(
+        size=100,
+        location=(0, 0, -3.2)
+    )
+
+    ground = bpy.context.object
+
+    ground.data.materials.append(
+        make_material(
+            "Ground",
+            (0.025, 0.025, 0.025)
+        )
+    )
+
+
+# ============================================================
+# RUN
+# ============================================================
+
+if __name__ == "__main__":
+    build_scene()
+
+What I expect the test to show
+
+The particularly interesting part is \(F_1\):
+
+\[
+F_1=\{0,1\}.
+\]
+
+The lifted 3-D coordinate set is therefore
+
+\[
+\{-1,0,+1\}^3\setminus\{(0,0,0)\},
+\]
+
+which gives
+
+\[
+3^3-1=26.
+\]
+
+So at Farey order 1, the correspondence is exact.
+
+The script should therefore report essentially:
+
+F_1:
+    Farey fractions : 2
+    3D rays         : 26
+    exact overlap   : 26
+    extra rays      : 0
+    missing rays    : 0
+    exact match     : True
+
+For \(F_2\),
+
+\[
+F_2=\left\{0,\frac12,1\right\},
+\]
+
+so directions such as
+
+\[
+(1,\tfrac12,0),\quad
+(1,\tfrac12,\tfrac12),\quad
+(1,\tfrac12,1)
+\]
+
+appear. These have no counterparts in the canonical 26-ray star. Thus the construction rapidly becomes a denser rational-direction star rather than the conventional Moravian star.
+
+The interesting mathematical conclusion
+
+This gives a more precise formulation of the hypothesis:
+
+> The 26-point Moravian star can be interpreted as the order-1 member of a natural 3-dimensional Farey-direction construction.
+
+
+
+That is substantially more defensible than saying "the Herrnhut star is a Farey sequence."
+
+And there is an especially nice structural coincidence:
+
+\[
+\begin{array}{ccl}
+\text{1 nonzero coordinate}&:&6\text{ directions}\\
+\text{2 nonzero coordinates}&:&12\text{ directions}\\
+\text{3 nonzero coordinates}&:&8\text{ directions}\\
+&&\\[-6pt]
+&&6+12+8=26.
+\end{array}
+\]
+
+These correspond exactly to the 6 square faces + 12 square faces + 8 triangular faces associated with the rhombicuboctahedral geometry underlying the conventional star.
+
+The next experiment I would make is stronger: instead of merely inserting Farey fractions as coordinates, use the Farey mediant operation recursively on the faces of the rhombicuboctahedron, then see whether successive subdivisions generate a recognizable family of higher-point Moravian stars. That would test whether there is a genuinely geometric Farey/Stern–Brocot construction rather than just an elegant numerical coincidence.
