@@ -937,6 +937,14 @@ def build_scene():
         )
     )
 
+    # Render settings
+    scene = bpy.context.scene
+    scene.render.engine = 'BLENDER_EEVEE_NEXT' if hasattr(bpy.types, 'RenderSettings') and 'BLENDER_EEVEE_NEXT' in dir(bpy.types) else 'BLENDER_EEVEE'
+    scene.render.resolution_x = 1280
+    scene.render.resolution_y = 720
+    scene.render.filepath = 'farey_stars_render.png'
+    bpy.ops.render.render(write_still=True)
+
 
 # ============================================================
 # RUN
